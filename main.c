@@ -24,16 +24,17 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include "EMA_filter.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+HAL_StatusTypeDef status;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define FIR_FILTER_LENGTH 11
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -45,20 +46,60 @@
 ADC_HandleTypeDef hadc3;
 
 UART_HandleTypeDef hlpuart1;
+UART_HandleTypeDef huart4;
+UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
 uint16_t raw;
 float temp;
-uint32_t tempInt;
+float tempFilter;
+uint16_t tempInt;
 float tempDiv=0;
-uint16_t sampleDiv=0;
-char msg[5];
+uint32_t sampleDiv=0;
+char msg[7];
+char timer[7];
 char rx_data[5];
-float setpoint=0.0;
+volatile float setpoint=0.0;
+volatile float oldSetpoint;
 char received[3];
 uint8_t hysteresis1;
 uint8_t hysteresis2;
+volatile uint32_t ticks;
+uint32_t ticksLong;
+uint8_t counter=0;
+volatile uint8_t buttonCount;
 GPIO_PinState transistor;
+uint8_t hystOn;
+
+float alpha;
+EMA filt;
+float filterOut;
+
+//char txSetpoint[7]={0x7B,0x4D,0x00,0x0D,0x0A};
+//char txSetpoint[10]={0x7B, 0x4D, 0x30, 0x30, 0x30, 0x42, 0x42, 0x38, 0x0D, 0x0A};
+//char txSetpoint[7]={0x7B,0x4D,0x00,0x0B,0xB8,0x0D,0x0A};
+char txSetpoint[1]={0xAA};
+char txProcess[10]={0x7B,0x4D,0x30,0x37,0x2A,0x2A,0x2A,0x2A,0x0D,0x0A};
+uint16_t set=3000;
+char stringSet[2];
+char rxSetpoint[10];
+
+float firBuf[11];
+float inpFIR;
+float tempFIR;
+uint8_t sumIndex;
+uint8_t bufIndex=11;
+float FIR_FILTER_RESPONSE[11]={-0.000000000000000002,
+		-0.007855854095023677,
+		0.040171175263434403,
+		-0.103314801557551267,
+		0.170762156469434240,
+		0.800474647839412690,
+		0.170762156469434268,
+		-0.103314801557551308,
+		0.040171175263434410,
+		-0.007855854095023681,
+		-0.000000000000000002};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -66,6 +107,9 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_LPUART1_UART_Init(void);
 static void MX_ADC3_Init(void);
+static void MX_UART4_Init(void);
+static void MX_USART3_UART_Init(void);
+static void MX_NVIC_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -88,16 +132,29 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-HAL_Init();
+  HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  //EMA_Init(&filt,alpha);
+  alpha=0.5;
+  filt.out=0.0;
   /* USER CODE END Init */
 
   /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+  //SysTick configuration
+
+    SystemCoreClockUpdate();
+    //generate interrupt for every 100ms
+    SysTick_Config(SystemCoreClock/10);
+    //SysTick ->LOAD = 72000-1;
+    SysTick ->CTRL = 0;
+    SysTick ->VAL = 0;
+    SysTick ->CTRL = (SysTick_CTRL_TICKINT_Msk |
+  		            SysTick_CTRL_ENABLE_Msk |
+  					SysTick_CTRL_CLKSOURCE_Msk);
 
   /* USER CODE END SysInit */
 
@@ -105,8 +162,13 @@ HAL_Init();
   MX_GPIO_Init();
   MX_LPUART1_UART_Init();
   MX_ADC3_Init();
-  //HAL_UART_Receive_IT(&hlpuart1, (uint8_t*)rx_data, strlen(rx_data));
+  MX_UART4_Init();
+  MX_USART3_UART_Init();
+
+  /* Initialize interrupts */
+  MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
+  //HAL_UART_Receive_IT(&hlpuart1,(uint8_t*)rx_data,5);
 
   /* USER CODE END 2 */
 
@@ -119,33 +181,72 @@ HAL_Init();
     /* USER CODE BEGIN 3 */
 
 
+	  HAL_UART_Transmit(&huart4, (uint8_t)*txSetpoint,1,HAL_MAX_DELAY);
+	  //wait for a time of HAL_MAX_DELAY for a response from the cooler
+	  //status=HAL_UART_Receive(&huart4, (uint8_t)*rxSetpoint,10,5000);
+	  while(status==HAL_TIMEOUT)
+	  {
+	      HAL_UART_Transmit(&huart4, (uint8_t)*txProcess,10,HAL_MAX_DELAY);
+	  	  HAL_UART_Receive(&huart4, (uint8_t)*rxSetpoint,10,5000);
+	  }
+	  while(status==HAL_OK)
+	  {
+		  HAL_UART_Transmit(&huart3, (uint8_t)*txSetpoint,1,HAL_MAX_DELAY);
+		  //currentTicks=ticks;
+		  /*
+		  while(ticks-currentTicks<100)
+		  {
+
+		  }
+		  */
+		  HAL_Delay(10);
+		  //delay(100);
+	  }
+
+	  //verify that message was received correctly by printing the response on the console
+	  HAL_UART_Transmit(&huart4, (uint8_t)*rxSetpoint,10,HAL_MAX_DELAY);
 
 	HAL_ADC_Start(&hadc3);
 	HAL_ADC_PollForConversion(&hadc3,HAL_MAX_DELAY);
 	raw=HAL_ADC_GetValue(&hadc3);
-	temp=(raw-844)*0.0125;
+	temp=(raw-1030)*0.022;
 	tempInt=(uint32_t)temp;
 	sampleDiv++;
-	if(sampleDiv==10000)
+	if(sampleDiv==130000)
 	{
-		tempDiv=tempInt;
+
 		sampleDiv=0;
-		//snprintf(msg, 5,"%.3f\r\n", tempDiv);
-		sprintf(msg, "%hu\r\n",tempInt);
+		tempFilter=EMA_Update(&filt,temp,alpha);
+		//tempFIR=FIRFilter(temp);
+		sprintf(msg,"%.3f\r\n", tempFilter);
+		//sprintf(msg, "%hu\r\n",tempInt);
 	    HAL_UART_Transmit(&hlpuart1,(uint8_t*)msg, strlen(msg),HAL_MAX_DELAY);
+	    sprintf(timer,"%ld\r\n",ticksLong);
+	    HAL_UART_Transmit(&hlpuart1,(uint8_t*)timer, strlen(timer),HAL_MAX_DELAY);
 	}
-	sprintf(msg, "%hu\r\n",tempDiv);
-	/*
-	transistor=HAL_GPIO_ReadPin(LD2_GPIO_Port, LD2_Pin,);
-	if(transistor==1 && tempDiv>setpoint+hysteresis1)
+	//sprintf(msg, "%hu\r\n",tempDiv);
+	//gcvt(tempDiv,5,msg);
+
+	if(tempInt>setpoint)
 	{
-		HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+	  HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_RESET);
+	  hystOn=1;
 	}
-	else if(transistor==0 && tempDiv<setpoint+hysteresis2)
+	else if(tempInt<setpoint-1)
 	{
-		HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+	  HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
+	  hystOn=0;
 	}
-    */
+	else if(tempInt<=setpoint && tempInt>=setpoint-1 && hystOn==1)
+	{
+	  HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_RESET);
+	}
+	else if(tempInt<=setpoint && tempInt>=setpoint-1 && hystOn==0)
+	{
+	  HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
+	}
+
+
   }
   /* USER CODE END 3 */
 }
@@ -194,6 +295,20 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief NVIC Configuration.
+  * @retval None
+  */
+static void MX_NVIC_Init(void)
+{
+  /* LPUART1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(LPUART1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(LPUART1_IRQn);
+  /* EXTI15_10_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 }
 
 /**
@@ -303,6 +418,102 @@ static void MX_LPUART1_UART_Init(void)
 }
 
 /**
+  * @brief UART4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_UART4_Init(void)
+{
+
+  /* USER CODE BEGIN UART4_Init 0 */
+
+  /* USER CODE END UART4_Init 0 */
+
+  /* USER CODE BEGIN UART4_Init 1 */
+
+  /* USER CODE END UART4_Init 1 */
+  huart4.Instance = UART4;
+  huart4.Init.BaudRate = 9600;
+  huart4.Init.WordLength = UART_WORDLENGTH_8B;
+  huart4.Init.StopBits = UART_STOPBITS_1;
+  huart4.Init.Parity = UART_PARITY_NONE;
+  huart4.Init.Mode = UART_MODE_TX_RX;
+  huart4.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart4.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart4.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart4.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart4.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart4, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart4, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN UART4_Init 2 */
+
+  /* USER CODE END UART4_Init 2 */
+
+}
+
+/**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART3_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART3_Init 0 */
+
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 9600;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart3.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart3, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart3, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+
+  /* USER CODE END USART3_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -320,6 +531,9 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : B1_Pin */
@@ -328,16 +542,19 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : transistor_Pin */
+  GPIO_InitStruct.Pin = transistor_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
+  HAL_GPIO_Init(transistor_GPIO_Port, &GPIO_InitStruct);
+
   /*Configure GPIO pin : LD2_Pin */
   GPIO_InitStruct.Pin = LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
-
-  /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */
@@ -352,7 +569,11 @@ static void MX_GPIO_Init(void)
 
   //HAL_UART_Receive_IT(&hlpuart1, (uint8_t*) rx_data, strlen(rx_data), 5000);
   //HAL_UART_Transmit(&hlpuart1,(uint8_t*) received, 3, HAL_MAX_DELAY);
+  while(setpoint==0.0f)
+  {
+  HAL_UART_Receive_IT(&hlpuart1,(uint8_t*)rx_data,5);
   setpoint=atof(rx_data);
+  }
   if(tempDiv<setpoint)
   {
 	  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
@@ -365,7 +586,92 @@ static void MX_GPIO_Init(void)
 
 }
 */
+ void SysTick_Handler(void)
+ {
+	 HAL_IncTick();
+	 ticks++;
+	 if(ticks==0)
+	  	{
+	  		counter++;
+	  	}
+ 	ticksLong=counter*65535+ticks;
 
+ }
+
+ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+ {
+	 char firstChar;
+	 HAL_StatusTypeDef status;
+	 if(GPIO_Pin=B1_Pin)
+	 {
+		 if(buttonCount==0)
+		 {
+		   //setpoint=0.0;
+		   while(setpoint==oldSetpoint)
+		   {
+			   HAL_UART_Receive(&hlpuart1,(uint8_t*)rx_data,5,HAL_MAX_DELAY);
+			   setpoint=atof(rx_data);
+		   }
+		   oldSetpoint=setpoint;
+		   buttonCount++;
+		 }
+
+		 else
+		 {
+             //send setpoint too cooler
+             HAL_UART_Transmit(&huart4, (uint8_t)*txProcess,10,HAL_MAX_DELAY);
+             //wait for a time of HAL_MAX_DELAY for a response from the cooler
+		     status=HAL_UART_Receive(&huart4, (uint8_t)*rxSetpoint,10,5000);
+		     while(status!=HAL_OK)
+		     {
+		    	 HAL_UART_Transmit(&huart4, (uint8_t)*txProcess,10,HAL_MAX_DELAY);
+		    	 HAL_UART_Receive(&huart4, (uint8_t)*rxSetpoint,10,5000);
+
+		     }
+		     //verify that message was received correctly by printing the response on the console
+		     HAL_UART_Transmit(&huart4, (uint8_t)*rxSetpoint,10,HAL_MAX_DELAY);
+             //wait for 2s for in order to be able to read the message on the console
+			 delay(2000);
+			 buttonCount=0;
+		 }
+	 }
+ }
+
+ void delay(uint16_t millis)
+ {
+	 uint16_t currentMillis = ticks;
+	 while(ticks-currentMillis<millis)
+	 {
+
+	 }
+ }
+/*
+ float FIRFilter( inpFIR)
+ {
+	 float out=0;
+	 firBuf[bufIndex]=inpFIR;
+	 bufIndex++;
+
+	 if(bufIndex==FIR_FILTER_LENGTH)
+	 {
+		 bufIndex=0;
+	 }
+
+	 sumIndex=bufIndex;
+	 for(uint8_t n=0; n<FIR_FILTER_LENGTH;n++)
+	 {
+		 if(sumIndex>0)
+		 {
+			 sumIndex--;
+		 }
+		 else
+		 {
+			 sumIndex=FIR_FILTER_LENGTH-1;
+		 }
+		 return out+=FIR_FILTER_RESPONSE[n]*firBuf[sumIndex];
+	 }
+ }
+*/
 /* USER CODE END 4 */
 
 /**
