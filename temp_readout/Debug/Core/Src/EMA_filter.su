@@ -1,0 +1,2 @@
+../Core/Src/EMA_filter.c:4:6:EMA_init	16	static
+../Core/Src/EMA_filter.c:10:7:EMA_Update	24	static

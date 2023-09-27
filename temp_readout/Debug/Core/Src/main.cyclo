@@ -1,0 +1,15 @@
+core_cm4.h:1809:22:__NVIC_SetPriority	2
+core_cm4.h:2017:26:SysTick_Config	2
+main.c:174:5:main	76
+main.c:497:6:SystemClock_Config	3
+main.c:543:13:MX_NVIC_Init	1
+main.c:558:13:MX_ADC3_Init	3
+main.c:617:13:MX_LPUART1_UART_Init	5
+main.c:664:13:MX_UART4_Init	5
+main.c:712:13:MX_USART3_UART_Init	5
+main.c:760:13:MX_GPIO_Init	1
+main.c:829:7:SysTick_Handler	2
+main.c:842:7:HAL_GPIO_EXTI_Callback	6
+main.c:924:8:calcFloat	21
+main.c:1021:8:FIRFilter	4
+main.c:1056:6:Error_Handler	1

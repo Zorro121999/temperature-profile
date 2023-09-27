@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include "EMA_filter.h"
 /* USER CODE END Includes */
 
@@ -58,48 +59,93 @@ float tempDiv=0;
 uint32_t sampleDiv=0;
 char msg[7];
 char timer[7];
+long int tempProcessFloat;
+char tempProcess[4];
+char tempProcessString[7];
+float floatProcess;
+
+
+
 char rx_data[5];
 volatile float setpoint=0.0;
-volatile float oldSetpoint;
+volatile float setpointNew=0.0;
+char invalidTemp[] = "Invalid Temperature";
+
 char received[3];
 uint8_t hysteresis1;
 uint8_t hysteresis2;
 volatile uint32_t ticks;
 uint32_t ticksLong;
-uint8_t counter=0;
+volatile uint8_t counter;
 volatile uint8_t buttonCount;
 GPIO_PinState transistor;
 uint8_t hystOn;
+uint8_t hystEnable;
+uint32_t onTime;
+uint32_t startTime;
+volatile float startpoint;
 
 float alpha;
 EMA filt;
 float filterOut;
 
-//char txSetpoint[7]={0x7B,0x4D,0x00,0x0D,0x0A};
-//char txSetpoint[10]={0x7B, 0x4D, 0x30, 0x30, 0x30, 0x42, 0x42, 0x38, 0x0D, 0x0A};
-//char txSetpoint[7]={0x7B,0x4D,0x00,0x0B,0xB8,0x0D,0x0A};
-char txSetpoint[1]={0xAA};
-char txProcess[10]={0x7B,0x4D,0x30,0x37,0x2A,0x2A,0x2A,0x2A,0x0D,0x0A};
+char txSetpoint[10];
+char rxSetpoint[10];
+char txMinSetpoint[]="{M30F060\r\n";
+char txMaxSetpoint[]="{M312710\r\n";
+char txStopCooler[]="{M140000\r\n";
+char txStartCooler[]="{M140001\r\n";
+char rxStartCooler[10];
+char txProcess[]="{M07****\r\n";
+char rxProcess[10];
+
+
 uint16_t set=3000;
 char stringSet[2];
 char rxSetpoint[10];
+uint16_t testSetpoint;
+uint8_t length;
+uint32_t timeCooler;
 
-float firBuf[11];
+
+float firBuf[31];
 float inpFIR;
+float outFIR;
 float tempFIR;
 uint8_t sumIndex;
-uint8_t bufIndex=11;
-float FIR_FILTER_RESPONSE[11]={-0.000000000000000002,
-		-0.007855854095023677,
-		0.040171175263434403,
-		-0.103314801557551267,
-		0.170762156469434240,
-		0.800474647839412690,
-		0.170762156469434268,
-		-0.103314801557551308,
-		0.040171175263434410,
-		-0.007855854095023681,
-		-0.000000000000000002};
+uint8_t bufIndex;
+//filter coefficients
+float FIR_FILTER_RESPONSE[31]={-0.001085865252318356,
+		-0.000820198808479928,
+		-0.000399968844021554,
+		0.000607254181376241,
+		0.002691675426970146,
+		0.006311591779100447,
+		0.011798257363143711,
+		0.019271958935107820,
+		0.028584966261934557,
+		0.039303202469766950,
+		0.050732418817472154,
+		0.061987359581297821,
+		0.072095113518572937,
+		0.080117842316778404,
+		0.085276424945082460,
+		0.087055934616432185,
+		0.085276424945082460,
+		0.080117842316778390,
+		0.072095113518572965,
+		0.061987359581297835,
+		0.050732418817472175,
+		0.039303202469766964,
+		0.028584966261934575,
+		0.019271958935107830,
+		0.011798257363143716,
+		0.006311591779100447,
+		0.002691675426970146,
+		0.000607254181376241,
+		-0.000399968844021553,
+		-0.000820198808479928,
+		-0.001085865252318356};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -111,7 +157,10 @@ static void MX_UART4_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_NVIC_Init(void);
 /* USER CODE BEGIN PFP */
-
+ void delay(uint16_t millis);
+float FIRFilter(float inpFIR);
+float calcFloat(char hexTemp[4]);
+char* calcHex(int intTemp);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -147,7 +196,7 @@ int main(void)
   //SysTick configuration
 
     SystemCoreClockUpdate();
-    //generate interrupt for every 100ms
+    //generate interrupt for every 1ms
     SysTick_Config(SystemCoreClock/10);
     //SysTick ->LOAD = 72000-1;
     SysTick ->CTRL = 0;
@@ -168,7 +217,12 @@ int main(void)
   /* Initialize interrupts */
   MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
-  //HAL_UART_Receive_IT(&hlpuart1,(uint8_t*)rx_data,5);
+
+  //hardcode minimum and maximum Setpoint
+  HAL_UART_Transmit(&huart4, (uint8_t*)txMaxSetpoint,strlen(txMaxSetpoint),HAL_MAX_DELAY);
+  HAL_Delay(2000);
+  HAL_UART_Transmit(&huart4, (uint8_t*)txMinSetpoint,strlen(txMinSetpoint),HAL_MAX_DELAY);
+  HAL_Delay(2000);
 
   /* USER CODE END 2 */
 
@@ -181,70 +235,256 @@ int main(void)
     /* USER CODE BEGIN 3 */
 
 
-	  HAL_UART_Transmit(&huart4, (uint8_t)*txSetpoint,1,HAL_MAX_DELAY);
-	  //wait for a time of HAL_MAX_DELAY for a response from the cooler
-	  //status=HAL_UART_Receive(&huart4, (uint8_t)*rxSetpoint,10,5000);
-	  while(status==HAL_TIMEOUT)
-	  {
-	      HAL_UART_Transmit(&huart4, (uint8_t)*txProcess,10,HAL_MAX_DELAY);
-	  	  HAL_UART_Receive(&huart4, (uint8_t)*rxSetpoint,10,5000);
-	  }
-	  while(status==HAL_OK)
-	  {
-		  HAL_UART_Transmit(&huart3, (uint8_t)*txSetpoint,1,HAL_MAX_DELAY);
-		  //currentTicks=ticks;
-		  /*
-		  while(ticks-currentTicks<100)
-		  {
-
-		  }
-		  */
-		  HAL_Delay(10);
-		  //delay(100);
-	  }
-
-	  //verify that message was received correctly by printing the response on the console
-	  HAL_UART_Transmit(&huart4, (uint8_t)*rxSetpoint,10,HAL_MAX_DELAY);
 
 	HAL_ADC_Start(&hadc3);
 	HAL_ADC_PollForConversion(&hadc3,HAL_MAX_DELAY);
 	raw=HAL_ADC_GetValue(&hadc3);
-	temp=(raw-1030)*0.022;
+	//transform 12 bit ADC value to temperature
+	temp=(raw-1030)*0.0183;
 	tempInt=(uint32_t)temp;
 	sampleDiv++;
+	tempFIR=FIRFilter(temp);
+	HAL_Delay(2000);
+
+	//pick one sample per second to be transmitted to the terminal
 	if(sampleDiv==130000)
 	{
 
 		sampleDiv=0;
-		tempFilter=EMA_Update(&filt,temp,alpha);
-		//tempFIR=FIRFilter(temp);
-		sprintf(msg,"%.3f\r\n", tempFilter);
-		//sprintf(msg, "%hu\r\n",tempInt);
+		//lowpass filter the results (it can be chosen between EMA and FIR filter)
+		//tempFilter=EMA_Update(&filt,temp,alpha);
+		tempFIR=FIRFilter(temp);
+		sprintf(msg,"%.3f\r\n", tempFIR);
+        //send filtered temp data to terminal
 	    HAL_UART_Transmit(&hlpuart1,(uint8_t*)msg, strlen(msg),HAL_MAX_DELAY);
+	    //send time in milliseconds to the terminal
 	    sprintf(timer,"%ld\r\n",ticksLong);
 	    HAL_UART_Transmit(&hlpuart1,(uint8_t*)timer, strlen(timer),HAL_MAX_DELAY);
-	}
-	//sprintf(msg, "%hu\r\n",tempDiv);
-	//gcvt(tempDiv,5,msg);
 
-	if(tempInt>setpoint)
+	    //request process temperature of cooler (not tested)
+
+	    HAL_UART_Transmit(&huart4, (uint8_t*)txProcess,strlen(txProcess),HAL_MAX_DELAY);
+	    HAL_UART_Receive(&huart4, (uint8_t*)rxProcess,10,5000);
+	    tempProcess[0]=rxProcess[7];
+	    tempProcess[1]=rxProcess[6];
+	    tempProcess[2]=rxProcess[5];
+	    tempProcess[3]=rxProcess[4];
+
+	    //convert hex value in string format into an integer
+	    tempProcessFloat=calcFloat(tempProcess);
+
+	    sprintf(tempProcessString,"%.2f\r\n",tempProcessFloat);
+	    //send process temperature to PC in string format
+	    HAL_UART_Transmit(&hlpuart1, (uint8_t*)tempProcessString,7,HAL_MAX_DELAY);
+
+	}
+
+
+	//Transistor On/Off control with hysteresis around final setpoint
+	if(hystEnable==1)
+	{
+	if(temp>setpoint)
 	{
 	  HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_RESET);
 	  hystOn=1;
 	}
-	else if(tempInt<setpoint-1)
+	else if(temp<setpoint-1)
 	{
 	  HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
 	  hystOn=0;
 	}
-	else if(tempInt<=setpoint && tempInt>=setpoint-1 && hystOn==1)
+	else if(temp<=setpoint && temp>=setpoint-1 && hystOn==1)
 	{
 	  HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_RESET);
 	}
-	else if(tempInt<=setpoint && tempInt>=setpoint-1 && hystOn==0)
+	else if(temp<=setpoint && temp>=setpoint-1 && hystOn==0)
 	{
 	  HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
 	}
+	}
+
+    //switch the oven on and then off again at the time simulated in simulink
+	onTime=ticks-startTime;
+	if(setpoint-startpoint>15.00 && setpoint-startpoint<17.00)
+	{
+
+	   if(onTime<665000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
+	   }
+	   else if(onTime>665000 && onTime<3030000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_RESET);
+
+	   }
+	   else if(onTime>3030000)
+	   {
+		   //since a point close to the setpoint is reached the hysteresis control can be enabled
+		   hystEnable=1;
+	   }
+	}
+	else if(setpoint-startpoint>17.00 && setpoint-startpoint<19.00)
+	{
+	   if(onTime<712000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
+	   }
+	   else if(onTime>712000 && onTime<3030000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_RESET);
+	   }
+	   else if(onTime>3030000)
+	   {
+		   hystEnable=1;
+	   }
+
+	}
+	else if(setpoint-startpoint>19.00 && setpoint-startpoint<21.00)
+	{
+	   if(onTime<758000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
+	   }
+	   else if(onTime>758000 && onTime<3030000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_RESET);
+	   }
+	   else if(onTime>3030000)
+	   {
+		   hystEnable=1;
+	   }
+
+	}
+	else if(setpoint-startpoint>21.00 && setpoint-startpoint<23.00)
+	{
+	   if(onTime<804000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
+	   }
+	   else if(onTime>804000 && onTime<3030000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_RESET);
+	   }
+	   else if(onTime>3030000)
+	   {
+		   hystEnable=1;
+	   }
+
+	}
+	else if(setpoint-startpoint>23.00 && setpoint-startpoint<25.00)
+	{
+	   if(onTime<850000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
+	   }
+	   else if(onTime>850000 && onTime<3030000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_RESET);
+	   }
+	   else if(onTime>3030000)
+	   {
+		   hystEnable=1;
+	   }
+
+	}
+	else if(setpoint-startpoint>25.00 && setpoint-startpoint<27.00)
+	{
+	   if(onTime<896000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
+	   }
+	   else if(onTime>896000 && onTime<3030000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_RESET);
+	   }
+	   else if(onTime>3030000)
+	   {
+		   hystEnable=1;
+	   }
+
+	}
+	else if(setpoint-startpoint>27.00 && setpoint-startpoint<29.00)
+	{
+	   if(onTime<942000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
+	   }
+	   else if(onTime>942000 && onTime<3030000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_RESET);
+	   }
+	   else if(onTime>3030000)
+	   {
+		   hystEnable=1;
+	   }
+
+	}
+	else if(setpoint-startpoint>29.00 && setpoint-startpoint<31.00)
+	{
+	   if(onTime<988000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
+	   }
+	   else if(onTime>988000 && onTime<3030000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_RESET);
+	   }
+	   else if(onTime>3030000)
+	   {
+		   hystEnable=1;
+	   }
+
+	}
+	else if(setpoint-startpoint>31.00 && setpoint-startpoint<33.00)
+	{
+	   if(onTime<1034000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
+	   }
+	   else if(onTime>1034000 && onTime<3030000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_RESET);
+	   }
+	   else if(onTime>3030000)
+	   {
+		   hystEnable=1;
+	   }
+
+	}
+	else if(setpoint-startpoint>33.00 && setpoint-startpoint<35.00)
+	{
+	   if(onTime<1094000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
+	   }
+	   else if(onTime>1094000 && onTime<3030000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_RESET);
+	   }
+	   else if(onTime>3030000)
+	   {
+		   hystEnable=1;
+	   }
+
+	}
+	else if(setpoint-startpoint>35.00 && setpoint-startpoint<37.00)
+	{
+	   if(onTime<1148000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_SET);
+	   }
+	   else if(onTime>1148000 && onTime<3030000)
+	   {
+		   HAL_GPIO_WritePin(transistor_GPIO_Port, transistor_Pin, GPIO_PIN_RESET);
+	   }
+	   else if(onTime>3030000)
+	   {
+		   hystEnable=1;
+	   }
+
+	}
+
+
 
 
   }
@@ -487,7 +727,7 @@ static void MX_USART3_UART_Init(void)
   huart3.Init.Parity = UART_PARITY_NONE;
   huart3.Init.Mode = UART_MODE_TX_RX;
   huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  //huart3.Init.OverSampling = UART_OVERSAMPLING_16;
   huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
   huart3.Init.ClockPrescaler = UART_PRESCALER_DIV1;
   huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
@@ -562,30 +802,13 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 /*
- void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-
-  UNUSED(huart);
-
-  //HAL_UART_Receive_IT(&hlpuart1, (uint8_t*) rx_data, strlen(rx_data), 5000);
-  //HAL_UART_Transmit(&hlpuart1,(uint8_t*) received, 3, HAL_MAX_DELAY);
-  while(setpoint==0.0f)
-  {
-  HAL_UART_Receive_IT(&hlpuart1,(uint8_t*)rx_data,5);
-  setpoint=atof(rx_data);
-  }
-  if(tempDiv<setpoint)
-  {
-	  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
-  }
-  else
-  {
-	  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
-  }
 
 
-}
+
+
 */
+//
+//SysTick interrupt handler
  void SysTick_Handler(void)
  {
 	 HAL_IncTick();
@@ -598,57 +821,172 @@ static void MX_GPIO_Init(void)
 
  }
 
+ //Button interrupt for user to enter the setpoints for oven and cooler
  void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
  {
 	 char firstChar;
+	 char setpointPromptTvac[]="Please enter Setpoint for TVAC";
 	 HAL_StatusTypeDef status;
 	 if(GPIO_Pin=B1_Pin)
 	 {
 		 if(buttonCount==0)
 		 {
-		   //setpoint=0.0;
-		   while(setpoint==oldSetpoint)
-		   {
-			   HAL_UART_Receive(&hlpuart1,(uint8_t*)rx_data,5,HAL_MAX_DELAY);
-			   setpoint=atof(rx_data);
-		   }
-		   oldSetpoint=setpoint;
-		   buttonCount++;
+
+			 HAL_UART_Transmit(&huart4, (uint8_t*)setpointPromptTvac,strlen(setpointPromptTvac),HAL_MAX_DELAY);
+			//UART checks if setpoint is in valid range
+			while(setpointNew<20.00 || setpointNew>60.00)
+			{
+			  //UART waits for user to enter 5 chars
+		      HAL_UART_Receive(&hlpuart1,(uint8_t*)rx_data,5,HAL_MAX_DELAY);
+			  setpoint=atof(rx_data);
+			  setpointNew=setpoint;
+			}
+			//reset setpointNew
+			setpointNew=0.00;
+            startTime=ticks;
+            startpoint=temp;
+            buttonCount++;
 		 }
 
 		 else
 		 {
-             //send setpoint too cooler
-             HAL_UART_Transmit(&huart4, (uint8_t)*txProcess,10,HAL_MAX_DELAY);
-             //wait for a time of HAL_MAX_DELAY for a response from the cooler
-		     status=HAL_UART_Receive(&huart4, (uint8_t)*rxSetpoint,10,5000);
-		     while(status!=HAL_OK)
-		     {
-		    	 HAL_UART_Transmit(&huart4, (uint8_t)*txProcess,10,HAL_MAX_DELAY);
-		    	 HAL_UART_Receive(&huart4, (uint8_t)*rxSetpoint,10,5000);
+             //this part is not tested
+			 char setpointPromptCooler[]="Please enter Setpoint for cooler";
+			 char rxTemp[6];
+			 float rxTempFloat;
+			 int rxTempInt;
+			 char rxTempHex[4];
+			 char dumpArray[8];
+			 float sign;
+			 uint8_t signRound[4];
+			 int result;
+			 HAL_UART_Transmit(&hlpuart1, (uint8_t*)setpointPromptCooler,strlen(setpointPromptCooler),HAL_MAX_DELAY);
+			 //UART waits for user to input setpoint in format +-xx.xx
+			 HAL_UART_Receive(&hlpuart1, (uint8_t*)rxTemp,6,HAL_MAX_DELAY);
 
-		     }
+
+			 rxTempFloat=atof(rxTemp);
+			 //Temperature value in float format is converted into hex value
+			 rxTempFloat=rxTempFloat*100;
+			 rxTempInt=(int)rxTempFloat;
+
+			 if(rxTempInt<0)
+			 {
+			    result=65536+rxTempInt;
+			 }
+			 else
+			 {
+				 result=rxTempInt;
+			 }
+			 for(int i=3;i==0;i--)
+			 {
+				sign=result/pow(16,i);
+				signRound[i]=floor(sign);
+				result=result-signRound[i]*pow(16,i);
+			 }
+
+			 //hex values have to converted to string format
+		     sprintf(rxTempHex[0],"%u",signRound[3]);
+		     sprintf(rxTempHex[1],"%u",signRound[2]);
+		     sprintf(rxTempHex[2],"%u",signRound[1]);
+		     sprintf(rxTempHex[3],"%u",signRound[0]);
+             //command is built be concatenation
+			 memcpy(dumpArray,strcat("{M00",rxTempHex),8);
+			 memcpy(txSetpoint,strcat(dumpArray,"\r\n"),10);
+             //send setpoint to cooler
+             HAL_UART_Transmit(&huart4, (uint8_t*)txSetpoint,sizeof(txSetpoint),HAL_MAX_DELAY);
+             //wait for a time of HAL_MAX_DELAY for a response from the cooler
+		     HAL_UART_Receive(&huart4, (uint8_t*)rxSetpoint,sizeof(rxSetpoint),5000);
+
 		     //verify that message was received correctly by printing the response on the console
-		     HAL_UART_Transmit(&huart4, (uint8_t)*rxSetpoint,10,HAL_MAX_DELAY);
+		     HAL_UART_Transmit(&huart4, (uint8_t*)rxSetpoint,sizeof(rxSetpoint),HAL_MAX_DELAY);
              //wait for 2s for in order to be able to read the message on the console
-			 delay(2000);
+			 HAL_Delay(2000);
+			 HAL_UART_Transmit(&huart4, (uint8_t*)txStartCooler,strlen(txStartCooler),HAL_MAX_DELAY);
+			 HAL_UART_Receive(&huart4, (uint8_t*)rxStartCooler,strlen(rxStartCooler),HAL_MAX_DELAY);
 			 buttonCount=0;
+
 		 }
 	 }
  }
 
- void delay(uint16_t millis)
+ //calculate the temperature in readable form from hex value in command
+ float calcFloat(char hexTemp[4])
  {
-	 uint16_t currentMillis = ticks;
-	 while(ticks-currentMillis<millis)
+	 int intProcess;
+	 int ergeb;
+	 for(int i=0;i<=3;i++)
 	 {
-
+		 switch(hexTemp[i])
+		 {
+		 case '0':
+			 intProcess=0;
+			 break;
+		 case '1':
+			 intProcess=1;
+			 break;
+		 case '2':
+			 intProcess=2;
+			 break;
+		 case '3':
+			 intProcess=3;
+		 case '4':
+			 intProcess=4;
+			 break;
+		 case '5':
+			 intProcess=5;
+			 break;
+		 case '6':
+			 intProcess=6;
+			 break;
+		 case '7':
+			 intProcess=7;
+			 break;
+		 case '8':
+			 intProcess=8;
+			 break;
+		 case '9':
+			 intProcess=9;
+			 break;
+		 case 'A':
+			 intProcess=10;
+			 break;
+		 case 'B':
+			 intProcess=11;
+			 break;
+		 case 'C':
+			 intProcess=12;
+			 break;
+		 case 'D':
+			 intProcess=13;
+			 break;
+		 case 'E':
+			 intProcess=14;
+			 break;
+		 case 'F':
+			 intProcess=15;
+			 break;
+		 }
+     //in case temperature was positive
+     if(hexTemp[0]=='0' || hexTemp[1]=='1' || hexTemp[2]=='2')
+     {
+    	 ergeb=ergeb+intProcess*pow(16,i);
+     }
+     else
+     //in case temperature was negative
+     {
+    	 ergeb=ergeb+intProcess*pow(16,i)-65536;
 	 }
+	 return floatProcess=ergeb/100;
  }
-/*
- float FIRFilter( inpFIR)
+ }
+
+
+
+ //lowpass filter with a cutoff frequency of 0.04Hz and Hamming window
+ float FIRFilter(float inpFIR)
  {
-	 float out=0;
+	 //fill up the ring buffer
 	 firBuf[bufIndex]=inpFIR;
 	 bufIndex++;
 
@@ -657,6 +995,8 @@ static void MX_GPIO_Init(void)
 		 bufIndex=0;
 	 }
 
+	 outFIR=0;
+	 //pointer to last input value
 	 sumIndex=bufIndex;
 	 for(uint8_t n=0; n<FIR_FILTER_LENGTH;n++)
 	 {
@@ -668,25 +1008,27 @@ static void MX_GPIO_Init(void)
 		 {
 			 sumIndex=FIR_FILTER_LENGTH-1;
 		 }
-		 return out+=FIR_FILTER_RESPONSE[n]*firBuf[sumIndex];
+		 //calculate output vector
+		 outFIR+=FIR_FILTER_RESPONSE[n]*firBuf[sumIndex];
 	 }
+	 return outFIR;
  }
-*/
+
 /* USER CODE END 4 */
 
 /**
   * @brief  This function is executed in case of error occurrence.
   * @retval None
   */
+
 void Error_Handler(void)
 {
-  /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
+
   __disable_irq();
   while (1)
   {
   }
-  /* USER CODE END Error_Handler_Debug */
+
 }
 
 #ifdef  USE_FULL_ASSERT

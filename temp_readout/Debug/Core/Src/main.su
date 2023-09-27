@@ -1,0 +1,15 @@
+../Drivers/CMSIS/Include/core_cm4.h:1809:22:__NVIC_SetPriority	16	static
+../Drivers/CMSIS/Include/core_cm4.h:2017:26:SysTick_Config	16	static
+../Core/Src/main.c:174:5:main	8	static
+../Core/Src/main.c:497:6:SystemClock_Config	88	static
+../Core/Src/main.c:543:13:MX_NVIC_Init	8	static
+../Core/Src/main.c:558:13:MX_ADC3_Init	40	static
+../Core/Src/main.c:617:13:MX_LPUART1_UART_Init	8	static
+../Core/Src/main.c:664:13:MX_UART4_Init	8	static
+../Core/Src/main.c:712:13:MX_USART3_UART_Init	8	static
+../Core/Src/main.c:760:13:MX_GPIO_Init	48	static
+../Core/Src/main.c:829:7:SysTick_Handler	8	static
+../Core/Src/main.c:842:7:HAL_GPIO_EXTI_Callback	144	static
+../Core/Src/main.c:924:8:calcFloat	48	static
+../Core/Src/main.c:1021:8:FIRFilter	24	static
+../Core/Src/main.c:1056:6:Error_Handler	4	static,ignoring_inline_asm
